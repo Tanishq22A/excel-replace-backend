@@ -5,29 +5,41 @@ from io import BytesIO
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
+import os
 
 app = Flask(__name__)
 CORS(app)
 
+# For simple project (single file in memory)
 df_store = None
 
 
+# -------------------------
+# Upload Excel
+# -------------------------
 @app.route("/upload", methods=["POST"])
 def upload():
 
     global df_store
 
     if "file" not in request.files:
-        return jsonify({"error": "No file"}), 400
+        return jsonify({"error": "No file uploaded"}), 400
 
     file = request.files["file"]
-    df_store = pd.read_excel(file)
+
+    try:
+        df_store = pd.read_excel(file)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
     return jsonify({
         "columns": df_store.columns.tolist()
     })
 
 
+# -------------------------
+# Replace values
+# -------------------------
 @app.route("/replace", methods=["POST"])
 def replace():
 
@@ -36,30 +48,53 @@ def replace():
     if df_store is None:
         return jsonify({"error": "No file uploaded"}), 400
 
-    data = request.json
+    data = request.get_json()
 
-    mode = data["mode"]
-    find_val = data["find"]
-    replace_val = data["replace"]
+    mode = data.get("mode")
+    find_val = str(data.get("find", "")).strip()
+    replace_val = data.get("replace", "")
     column = data.get("column")
 
-    if mode == "find":
-        df_store = df_store.applymap(
-            lambda x: replace_val if str(x) == find_val else x
-        )
+    if find_val == "":
+        return jsonify({"error": "Find value is empty"}), 400
 
+    # ---------------- find & replace (entire sheet)
+    if mode == "find":
+
+        def replace_cell(x):
+            if pd.isna(x):
+                return x
+            if str(x).strip().lower() == find_val.lower():
+                return replace_val
+            return x
+
+        df_store = df_store.applymap(replace_cell)
+
+    # ---------------- row wise (column based)
     elif mode == "row":
+
         if column not in df_store.columns:
             return jsonify({"error": "Invalid column"}), 400
 
-        df_store[column] = df_store[column].apply(
-            lambda x: replace_val if str(x) == find_val else x
-        )
+        def replace_cell_col(x):
+            if pd.isna(x):
+                return x
+            if str(x).strip().lower() == find_val.lower():
+                return replace_val
+            return x
+
+        df_store[column] = df_store[column].apply(replace_cell_col)
+
+    else:
+        return jsonify({"error": "Invalid mode"}), 400
 
     return jsonify({"status": "ok"})
 
 
-@app.route("/download/excel")
+# -------------------------
+# Download Excel
+# -------------------------
+@app.route("/download/excel", methods=["GET"])
 def download_excel():
 
     global df_store
@@ -74,11 +109,15 @@ def download_excel():
     return send_file(
         buf,
         as_attachment=True,
-        download_name="updated.xlsx"
+        download_name="updated.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 
-@app.route("/download/pdf")
+# -------------------------
+# Download PDF
+# -------------------------
+@app.route("/download/pdf", methods=["GET"])
 def download_pdf():
 
     global df_store
@@ -105,9 +144,14 @@ def download_pdf():
     return send_file(
         buf,
         as_attachment=True,
-        download_name="updated.pdf"
+        download_name="updated.pdf",
+        mimetype="application/pdf"
     )
 
 
+# -------------------------
+# Run (Render compatible)
+# -------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
